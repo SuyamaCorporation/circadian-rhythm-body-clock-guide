@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>概日リズム 体内時計 ガイド</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { background: #0f172a; }
+  .timeline-bar { position: relative; height: 100%; }
+  .time-segment { position: absolute; top: 0; height: 100%; opacity: 0.85; }
+  .marker { position: absolute; top: 0; width: 2px; height: 100%; }
+  .marker-label { position: absolute; top: 0; transform: translateX(-50%); font-size: 10px; white-space: nowrap; }
+</style>
+</head>
+<body class="min-h-screen text-slate-100 p-4">
+<div class="max-w-3xl mx-auto">
+  <h1 class="text-2xl font-bold text-amber-400 mb-1">概日リズム 体内時計 ガイド</h1>
+  <p class="text-slate-400 text-sm mb-4">起床時刻から体内時計のホルモンピーク・パフォーマンス最適時間帯を推計</p>
+
+  <!-- Wake time input -->
+  <div class="bg-slate-800 rounded-lg p-4 mb-4 flex flex-wrap gap-4 items-center">
+    <div>
+      <label class="text-sm text-slate-300 block mb-1" for="wakeInput">起床時刻</label>
+      <input id="wakeInput" type="time" value="06:30" class="bg-slate-700 border border-slate-600 rounded px-3 py-1.5 text-white text-base" oninput="updateGuide()">
+    </div>
+    <div id="wakeDisplay" class="text-lg font-semibold text-amber-300"></div>
+    <div class="ml-auto text-xs text-slate-500">起床時刻はLocalStorageに保存されます</div>
+  </div>
+
+  <!-- 24h Timeline -->
+  <div class="bg-slate-800 rounded-lg p-4 mb-4">
+    <h2 class="text-sm font-semibold text-slate-300 mb-3">24時間タイムライン</h2>
+    <!-- Color band -->
+    <div class="relative h-10 rounded overflow-hidden mb-1" id="colorBand"></div>
+    <!-- Hour ticks -->
+    <div class="relative h-5" id="hourTicks"></div>
+    <!-- Current time indicator -->
+    <div class="relative h-0" id="nowIndicator"></div>
+  </div>
+
+  <!-- Hormone peaks -->
+  <div class="grid grid-cols-3 gap-3 mb-4">
+    <div class="bg-slate-800 rounded-lg p-3 border-l-4 border-orange-400">
+      <p class="text-xs text-orange-300 font-medium mb-1">コルチゾール ピーク</p>
+      <p id="cortisolTime" class="text-xl font-bold text-orange-400">--:--</p>
+      <p class="text-xs text-slate-400 mt-1">覚醒・エネルギー動員</p>
+    </div>
+    <div class="bg-slate-800 rounded-lg p-3 border-l-4 border-blue-400">
+      <p class="text-xs text-blue-300 font-medium mb-1">メラトニン 分泌開始</p>
+      <p id="melatoninTime" class="text-xl font-bold text-blue-400">--:--</p>
+      <p class="text-xs text-slate-400 mt-1">眠気・睡眠誘発</p>
+    </div>
+    <div class="bg-slate-800 rounded-lg p-3 border-l-4 border-red-400">
+      <p class="text-xs text-red-300 font-medium mb-1">体温 最高点</p>
+      <p id="tempTime" class="text-xl font-bold text-red-400">--:--</p>
+      <p class="text-xs text-slate-400 mt-1">身体能力ピーク</p>
+    </div>
+  </div>
+
+  <!-- Zones -->
+  <div id="zoneList" class="space-y-2 mb-4"></div>
+
+  <!-- Tips -->
+  <div class="bg-slate-800 rounded-lg p-4">
+    <h2 class="text-sm font-semibold text-amber-300 mb-3">睡眠改善ヒント</h2>
+    <ul id="tipsList" class="space-y-1 text-sm text-slate-300"></ul>
+  </div>
+</div>
+
+<script>
+function escapeHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+function pad(n) { return String(Math.floor(n)).padStart(2,'0'); }
+function fmtTime(h) {
+  const hh = ((Math.floor(h) % 24) + 24) % 24;
+  const mm = Math.round((h % 1) * 60);
+  return pad(hh) + ':' + pad(mm);
+}
+function timeToH(str) {
+  const [h, m] = str.split(':').map(Number);
+  return h + m / 60;
+}
+
+function computeZones(wakeH) {
+  // Circadian offsets from wake time (hours)
+  const cortisolPeak = wakeH + 0.5;       // 30 min after wake
+  const tempPeak = wakeH + 10;            // body temp max ~10h after wake
+  const melatoninStart = wakeH + 14;      // melatonin onset ~14h after wake
+  const sleepOnset = wakeH + 15.5;        // ideal sleep ~15.5h after wake
+
+  return {
+    cortisol: cortisolPeak,
+    melatonin: melatoninStart,
+    temp: tempPeak,
+    focusStart: wakeH + 2,
+    focusEnd: wakeH + 6,
+    dipStart: wakeH + 6,
+    dipEnd: wakeH + 8,
+    physStart: tempPeak - 1,
+    physEnd: tempPeak + 2,
+    eveningFocusStart: wakeH + 8,
+    eveningFocusEnd: wakeH + 11,
+    melatoninStartH: melatoninStart,
+    melatoninEndH: melatoninStart + 2,
+    sleepStart: sleepOnset,
+    sleepEnd: sleepOnset + 8.5,
+  };
+}
+
+function mod24(h) { return ((h % 24) + 24) % 24; }
+
+function updateGuide() {
+  const wakeStr = document.getElementById('wakeInput').value || '06:30';
+  localStorage.setItem('circadian_wake', wakeStr);
+  const wakeH = timeToH(wakeStr);
+
+  document.getElementById('wakeDisplay').textContent = '起床 ' + wakeStr;
+
+  const z = computeZones(wakeH);
+  document.getElementById('cortisolTime').textContent = fmtTime(z.cortisol);
+  document.getElementById('melatoninTime').textContent = fmtTime(z.melatonin);
+  document.getElementById('tempTime').textContent = fmtTime(z.temp);
+
+  // Color band (24h, starting from 0:00)
+  drawColorBand(wakeH, z);
+  drawZoneCards(wakeH, z);
+  drawTips(wakeH, z);
+}
+
+function drawColorBand(wakeH, z) {
+  const band = document.getElementById('colorBand');
+  const ticks = document.getElementById('hourTicks');
+  band.innerHTML = '';
+  ticks.innerHTML = '';
+
+  // Segments defined as {startH, endH (absolute 24h), color, label}
+  const segments = [
+    { s: mod24(z.sleepStart), e: mod24(z.sleepEnd), color: '#1e3a5f', label: '睡眠' },
+    { s: mod24(wakeH), e: mod24(z.focusStart), color: '#7c3a00', label: '覚醒' },
+    { s: mod24(z.focusStart), e: mod24(z.focusEnd), color: '#1e4d1e', label: '集中' },
+    { s: mod24(z.dipStart), e: mod24(z.dipEnd), color: '#4a4a00', label: '低下' },
+    { s: mod24(z.physStart), e: mod24(z.physEnd), color: '#4a0000', label: '身体' },
+    { s: mod24(z.eveningFocusStart), e: mod24(z.eveningFocusEnd), color: '#1a2550', label: '夕方' },
+    { s: mod24(z.melatoninStartH), e: mod24(z.melatoninEndH), color: '#3a1a4a', label: 'ΜEL' },
+  ];
+
+  // Render segments as absolute left% in 24h
+  segments.forEach(seg => {
+    let s = seg.s, e = seg.e;
+    const render = (s2, e2) => {
+      if (e2 <= s2) return;
+      const div = document.createElement('div');
+      div.style.cssText = `position:absolute;top:0;left:${s2/24*100}%;width:${(e2-s2)/24*100}%;height:100%;background:${seg.color};`;
+      const lbl = document.createElement('span');
+      lbl.style.cssText = 'position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-size:9px;color:rgba(255,255,255,0.7);white-space:nowrap;pointer-events:none;';
+      lbl.textContent = seg.label;
+      div.appendChild(lbl);
+      band.appendChild(div);
+    };
+    if (e < s) { render(s, 24); render(0, e); } else { render(s, e); }
+  });
+
+  // Hour ticks every 3h
+  for (let h = 0; h < 24; h += 3) {
+    const pct = h / 24 * 100;
+    const tick = document.createElement('div');
+    tick.style.cssText = `position:absolute;left:${pct}%;top:0;font-size:10px;color:#475569;transform:translateX(-50%);`;
+    tick.textContent = pad(h) + ':00';
+    ticks.appendChild(tick);
+  }
+
+  // Markers for key times
+  const markers = [
+    { h: mod24(wakeH), color: '#fb923c', label: '起床' },
+    { h: mod24(z.cortisol), color: '#f97316', label: 'CAM' },
+    { h: mod24(z.temp), color: '#ef4444', label: '体温↑' },
+    { h: mod24(z.melatonin), color: '#a78bfa', label: 'MEL' },
+  ];
+  markers.forEach(m => {
+    const pct = m.h / 24 * 100;
+    const mk = document.createElement('div');
+    mk.style.cssText = `position:absolute;left:${pct}%;top:0;width:2px;height:100%;background:${m.color};pointer-events:none;`;
+    const lbl = document.createElement('div');
+    lbl.style.cssText = `position:absolute;top:2px;left:${pct}%;transform:translateX(-50%);font-size:9px;color:${m.color};white-space:nowrap;font-weight:bold;`;
+    lbl.textContent = m.label;
+    band.appendChild(mk);
+    band.appendChild(lbl);
+  });
+}
+
+function drawZoneCards(wakeH, z) {
+  const list = document.getElementById('zoneList');
+  const zones = [
+    { color: 'border-orange-500', icon: '☀️', label: '覚醒準備', time: `${fmtTime(wakeH)} - ${fmtTime(z.focusStart)}`, bg: 'bg-orange-900/20', activities: '水を飲む、軽いストレッチ、朝日を浴びる', note: 'コルチゾール急上昇中' },
+    { color: 'border-green-500', icon: '🧠', label: '午前集中ゾーン', time: `${fmtTime(z.focusStart)} - ${fmtTime(z.focusEnd)}`, bg: 'bg-green-900/20', activities: '深い思考・執筆・重要な意思決定・難しい学習', note: '論理思考・ワーキングメモリ最高' },
+    { color: 'border-yellow-500', icon: '🍽️', label: '昼食後低下', time: `${fmtTime(z.dipStart)} - ${fmtTime(z.dipEnd)}`, bg: 'bg-yellow-900/20', activities: '軽いミーティング・ルーティン作業・短い休憩', note: '20分仮眠が効果的（それ以上は禁止）' },
+    { color: 'border-red-500', icon: '💪', label: '身体能力ゾーン', time: `${fmtTime(z.physStart)} - ${fmtTime(z.physEnd)}`, bg: 'bg-red-900/20', activities: '有酸素運動・筋トレ・スポーツ・肉体的作業', note: '体温最高・反応速度・筋力ピーク' },
+    { color: 'border-indigo-500', icon: '📖', label: '夕方集中ゾーン', time: `${fmtTime(z.eveningFocusStart)} - ${fmtTime(z.eveningFocusEnd)}`, bg: 'bg-indigo-900/20', activities: 'クリエイティブ作業・復習・社交・議論', note: '言語能力・創造性が高い時間帯' },
+    { color: 'border-purple-500', icon: '🌙', label: 'メラトニン分泌', time: `${fmtTime(z.melatonin)} - ${fmtTime(z.melatonin + 2)}`, bg: 'bg-purple-900/20', activities: '読書・瞑想・入浴・スクリーン輝度を下げる', note: 'ブルーライト回避・体温を下げる準備' },
+    { color: 'border-blue-500', icon: '😴', label: '推奨就寝', time: `${fmtTime(z.sleepStart)} 頃`, bg: 'bg-blue-900/20', activities: '7-9時間の睡眠・一定の就寝時刻を維持', note: '不規則な就寝はリズムを乱す' },
+  ];
+
+  list.innerHTML = zones.map(zone => `
+    <div class="${zone.bg} border-l-4 ${zone.color} rounded-lg p-3 flex gap-3 items-start">
+      <span class="text-xl flex-shrink-0" aria-hidden="true">${escapeHtml(zone.icon)}</span>
+      <div class="flex-1 min-w-0">
+        <div class="flex flex-wrap gap-2 items-center mb-0.5">
+          <span class="font-semibold text-sm text-slate-100">${escapeHtml(zone.label)}</span>
+          <span class="text-xs text-slate-400 font-mono">${escapeHtml(zone.time)}</span>
+        </div>
+        <p class="text-xs text-slate-300 mb-0.5">${escapeHtml(zone.activities)}</p>
+        <p class="text-xs text-slate-500 italic">${escapeHtml(zone.note)}</p>
+      </div>
+    </div>
+  `).join('');
+}
+
+function drawTips(wakeH, z) {
+  const tips = [
+    `毎日同じ時刻（${fmtTime(wakeH)}）に起床することでリズムが安定します`,
+    `起床後30分以内に明るい光（2500lx以上）を浴びてコルチゾール分泌を促進`,
+    `${fmtTime(z.melatonin)}以降はスマートフォンの輝度を50%以下に設定`,
+    `就寝1〜2時間前の入浴（38-40°C、15分）で深部体温を下げて入眠促進`,
+    `週末の「寝だめ」は社会的時差ぼけ（ソーシャル・ジェットラグ）を引き起こす`,
+    `カフェインの半減期は5〜6時間：${fmtTime(z.melatonin - 6)}以降のカフェイン摂取は睡眠の質を低下させる`,
+    `${fmtTime(z.dipStart)}-${fmtTime(z.dipEnd)}の眠気は概日リズムの正常反応（20分仮眠が効果的）`,
+  ];
+  document.getElementById('tipsList').innerHTML = tips.map(t =>
+    `<li class="flex gap-2"><span class="text-amber-400 flex-shrink-0">•</span><span>${escapeHtml(t)}</span></li>`
+  ).join('');
+}
+
+// Load saved wake time
+const saved = localStorage.getItem('circadian_wake');
+if (saved) document.getElementById('wakeInput').value = saved;
+updateGuide();
+</script>
+</body>
+</html>
